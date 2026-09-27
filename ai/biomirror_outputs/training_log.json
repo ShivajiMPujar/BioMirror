@@ -1,0 +1,76 @@
+{
+  "timestamp": "2026-08-12T13:52:08.174601",
+  "args": {
+    "full": true,
+    "quick": false,
+    "eval_only": false,
+    "epochs": 100,
+    "data": "diabetes_lifestyle_dataset_500.csv",
+    "model": "biomirror_pinn.pt",
+    "output": "biomirror_outputs"
+  },
+  "stages": {
+    "features": {
+      "status": "failed",
+      "error": "[Errno 2] No such file or directory: 'diabetes_lifestyle_dataset_500.csv'"
+    },
+    "training": {
+      "status": "failed",
+      "error": "[Errno 2] No such file or directory: 'diabetes_lifestyle_dataset_500.csv'"
+    },
+    "tuning": {
+      "status": "success",
+      "best_rmse": 19.2429,
+      "top_params": {
+        "hidden_dim": 512.0,
+        "n_attention_heads": 2.0,
+        "n_gru_layers": 3.0,
+        "dropout": 0.23480845064313663,
+        "learning_rate": 0.0002902756826903771
+      },
+      "top_importance": {
+        "dropout": 0.319,
+        "learning_rate": 0.275,
+        "lambda_temporal": 0.181
+      },
+      "elapsed_s": 0.06
+    },
+    "evaluation": {
+      "status": "success",
+      "mae": 10.917,
+      "rmse": 13.686,
+      "r2": 0.9183,
+      "mard": 7.71,
+      "mard_grade": "EXCELLENT",
+      "clarke_A": 94.4,
+      "plots": [],
+      "elapsed_s": 0.04
+    },
+    "reversal": {
+      "status": "success",
+      "reversal_score": 70.77,
+      "recovery_stage": "PRE_REVERSAL",
+      "months_to_reversal": 3.8,
+      "hba1c_now": 7.2,
+      "hba1c_90d": 5.0,
+      "elapsed_s": 0.01
+    },
+    "federated": {
+      "status": "success",
+      "rounds_completed": 10,
+      "final_loss": 0.5688,
+      "dp_epsilon": 38.786,
+      "privacy_guarantee": "(\u03b5\u224838.79, \u03b4=1e-05)-DP",
+      "elapsed_s": 0.02
+    },
+    "tests": {
+      "status": "passed",
+      "total": 48,
+      "passed": 48,
+      "failed": 0,
+      "errors": 0,
+      "elapsed_s": 0.02
+    }
+  },
+  "total_elapsed_s": 4.55
+}

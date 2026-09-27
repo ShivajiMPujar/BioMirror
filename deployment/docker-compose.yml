@@ -1,0 +1,113 @@
+version: "3.9"
+
+# BioMirror — Docker Compose (Full Stack)
+# Usage:
+#   docker compose up -d              # start api + postgres + frontend
+#   docker compose --profile train up # also run the ai/ PINN training pipeline
+#   docker compose logs -f api        # follow API logs
+#   docker compose down               # stop all
+#
+# Phase 1 correction notes (previous version predated the backend/ai/frontend
+# folder restructuring and referenced services the code doesn't use):
+#   - Redis was removed: no Redis client exists anywhere in backend_api.py.
+#     Re-add it here (and wire it in the code) if/when a caching or session
+#     layer is actually implemented.
+#   - build context is now the PROJECT ROOT (`..`), not `.`, since the
+#     Dockerfile needs to COPY backend/, ai/, and frontend/ as siblings.
+#
+# Phase 2 update: PINN_MODEL_PATH is back on the `api` service — as of
+# Phase 2, backend/ai_bridge.py genuinely loads models/biomirror_pinn.pt
+# at startup for near-term glucose prediction (falls back gracefully to
+# the Bergman engine if the file is missing or torch isn't installed).
+
+networks:
+  biomirror-net:
+    driver: bridge
+
+volumes:
+  pg_data:
+  model_cache:
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: biomirror-postgres
+    environment:
+      POSTGRES_DB:       biomirror
+      POSTGRES_USER:     biomirror
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-biomirror_dev_2025}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks: [biomirror-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biomirror"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── FastAPI Backend ────────────────────────────────────────────────
+  api:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: biomirror-api
+    environment:
+      BIOMIRROR_SECRET:  ${BIOMIRROR_SECRET:-change-me-in-production}
+      DATABASE_URL:      postgresql+asyncpg://biomirror:${POSTGRES_PASSWORD:-biomirror_dev_2025}@postgres:5432/biomirror
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY:      ${GROQ_API_KEY:-}
+      GROQ_MODEL:        ${GROQ_MODEL:-openai/gpt-oss-20b}
+      ENVIRONMENT:       ${ENVIRONMENT:-development}
+      PINN_MODEL_PATH:   /app/models/biomirror_pinn.pt
+    volumes:
+      - ../data/diabetes_lifestyle_dataset_500.csv:/app/data/dataset.csv:ro
+      - model_cache:/app/models
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [biomirror-net]
+    restart: unless-stopped
+    command: >
+      uvicorn backend.backend_api:app
+        --host 0.0.0.0
+        --port 8000
+        --workers 2
+        --log-level info
+
+  # ── Frontend ───────────────────────────────────────────────────────
+  frontend:
+    image: nginx:1.25-alpine
+    container_name: biomirror-frontend
+    volumes:
+      - ../frontend/biomirror_app.html:/usr/share/nginx/html/index.html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:80"
+    depends_on: [api]
+    networks: [biomirror-net]
+    restart: unless-stopped
+
+  # ── PINN Trainer (run-once job, offline research pipeline) ──────────
+  # NOTE: this trains ai/pinn_model.py standalone. Its output is not
+  # currently loaded by the `api` service (see architectural analysis,
+  # Phase 2 item #1) — wiring that up is future work, not done in Phase 1.
+  trainer:
+    build:
+      context: ..
+      dockerfile: deployment/Dockerfile
+    container_name: biomirror-trainer
+    environment:
+      PINN_MODEL_PATH: /app/models/biomirror_pinn.pt
+    command: python ai/train.py --full --epochs 100
+    volumes:
+      - model_cache:/app/models
+      - ../data/diabetes_lifestyle_dataset_500.csv:/app/data/dataset.csv:ro
+    networks: [biomirror-net]
+    profiles: ["train"]   # only runs with: docker compose --profile train up

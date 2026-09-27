@@ -1,0 +1,27 @@
+# Environment / secrets
+.env
+*.env
+!deployment/.env.example
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+.venv/
+*.egg
+
+# Model / training artifacts (large, regenerable via ai/train_checkpoint.py)
+outputs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,211 @@
+{
+  "evaluation_timestamp": "2026-08-12T08:22:08.122450",
+  "dataset": {
+    "path": "diabetes_lifestyle_dataset_500.csv",
+    "n_samples": 500,
+    "mean_glucose": 157.7
+  },
+  "model": {
+    "path": null,
+    "type": "BioMirror-PINN-v1.0"
+  },
+  "metrics": {
+    "regression": {
+      "MAE_mg_dl": 10.917,
+      "RMSE_mg_dl": 13.686,
+      "R2": 0.9183,
+      "MARD_pct": 7.71,
+      "TIR_accuracy_pct": 91.8,
+      "direction_accuracy_pct": 78.96
+    },
+    "classification": {
+      "weighted_precision": 0.8903,
+      "weighted_recall": 0.892,
+      "weighted_f1": 0.8906,
+      "per_class": {
+        "Normal (0)": {
+          "precision": 0.9442,
+          "recall": 0.9442,
+          "f1-score": 0.9442,
+          "support": 197.0
+        },
+        "Elevated (1)": {
+          "precision": 0.8053,
+          "recall": 0.7398,
+          "f1-score": 0.7712,
+          "support": 123.0
+        },
+        "High (2)": {
+          "precision": 0.8895,
+          "recall": 0.9389,
+          "f1-score": 0.9135,
+          "support": 180.0
+        },
+        "macro avg": {
+          "precision": 0.8796,
+          "recall": 0.8743,
+          "f1-score": 0.8763,
+          "support": 500.0
+        },
+        "weighted avg": {
+          "precision": 0.8903,
+          "recall": 0.892,
+          "f1-score": 0.8906,
+          "support": 500.0
+        }
+      }
+    },
+    "clinical": {
+      "clarke_zone_A_pct": 94.4,
+      "clarke_zone_B_pct": 5.2,
+      "hypoglycemia_detect_pct": 98.2,
+      "hyperglycemia_detect_pct": 93.6,
+      "mard_clinical_grade": "EXCELLENT"
+    },
+    "clarke_ega": {
+      "A": {
+        "count": 472,
+        "pct": 94.4
+      },
+      "B": {
+        "count": 28,
+        "pct": 5.6
+      },
+      "C": {
+        "count": 0,
+        "pct": 0.0
+      },
+      "D": {
+        "count": 0,
+        "pct": 0.0
+      },
+      "E": {
+        "count": 0,
+        "pct": 0.0
+      }
+    }
+  },
+  "shap_top10": {
+    "prev_glucose": 0.382,
+    "carbs": 0.341,
+    "glycemic_load": 0.298,
+    "insulin_sensitivity": -0.254,
+    "meal_impact": 0.231,
+    "X_bergman": -0.198,
+    "activity_response": -0.187,
+    "steps": -0.165,
+    "metabolic_stress": 0.142,
+    "sleep_coefficient": 0.128
+  },
+  "xai_example": {
+    "current_glucose": 185,
+    "explained_rise": 40.7,
+    "baseline_contribution": 144.3,
+    "factor_contributions": {
+      "meal_carbs": 33.8,
+      "low_activity": 2.9,
+      "sleep_deficit": 4.0
+    },
+    "explanation": [
+      "High-carb meal (75g) added ~34 mg/dL",
+      "Low activity (2654 steps) reduced glucose clearance by ~3 mg/dL",
+      "Poor sleep quality (1/1.0) added ~4 mg/dL via insulin resistance"
+    ],
+    "recommendation": "Replace high-GI carbs with low-GI alternatives. Add fiber (salad/dal) to slow absorption."
+  },
+  "reversal_report": {
+    "current_status": {
+      "hba1c": 7.12,
+      "reversal_score": 51.3,
+      "recovery_stage": 2,
+      "stage_label": "Pre-Reversal",
+      "glucose_mean": 157.7,
+      "tir_pct": 63.0
+    },
+    "reversal_forecast": {
+      "months_to_reversal": 140.6,
+      "target_hba1c": 6.4,
+      "confidence": "LOW",
+      "trajectory_90d": [
+        {
+          "day": 0,
+          "hba1c": 7.12
+        },
+        {
+          "day": 10,
+          "hba1c": 7.12
+        },
+        {
+          "day": 20,
+          "hba1c": 7.12
+        },
+        {
+          "day": 30,
+          "hba1c": 7.11
+        },
+        {
+          "day": 40,
+          "hba1c": 7.11
+        },
+        {
+          "day": 50,
+          "hba1c": 7.11
+        },
+        {
+          "day": 60,
+          "hba1c": 7.11
+        },
+        {
+          "day": 70,
+          "hba1c": 7.11
+        },
+        {
+          "day": 80,
+          "hba1c": 7.11
+        },
+        {
+          "day": 90,
+          "hba1c": 7.1
+        }
+      ]
+    },
+    "intervention_priorities": [
+      {
+        "rank": 1,
+        "lever": "Physical Activity",
+        "action": "Increase daily steps from 2,654 to 7,000-10,000",
+        "expected_impact": "Reduces HbA1c by ~0.4% in 90 days",
+        "difficulty": "LOW"
+      },
+      {
+        "rank": 2,
+        "lever": "Glycemic Control",
+        "action": "Reduce refined carbs, add 30g fiber/day, eat low-GI meals",
+        "expected_impact": "Improves TIR from 63% to ~75% in 60 days",
+        "difficulty": "MEDIUM"
+      },
+      {
+        "rank": 3,
+        "lever": "Body Composition",
+        "action": "Target 5-7% weight reduction (BMI 27.0 \u2192 25.4)",
+        "expected_impact": "Each 1kg loss improves insulin sensitivity ~4%",
+        "difficulty": "HIGH"
+      },
+      {
+        "rank": 4,
+        "lever": "Sleep Optimization",
+        "action": "Maintain 7-9h sleep schedule, no screens 1h before bed",
+        "expected_impact": "Improves insulin sensitivity 12-18% within 2 weeks",
+        "difficulty": "LOW"
+      }
+    ],
+    "metabolic_summary": {
+      "insulin_sensitivity_index": 68.0,
+      "p3_estimated": 3.4e-05,
+      "time_in_range": 63.0,
+      "avg_steps_vs_target": "2,654 / 8,000",
+      "metabolic_age": 34.0
+    }
+  },
+  "plots_generated": []
+}

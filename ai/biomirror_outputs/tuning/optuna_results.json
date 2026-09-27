@@ -1,0 +1,90 @@
+{
+  "study_name": "biomirror-pinn-optimisation",
+  "n_trials": 20,
+  "best_rmse": 19.2429,
+  "best_params": {
+    "hidden_dim": 512.0,
+    "n_attention_heads": 2.0,
+    "n_gru_layers": 3.0,
+    "dropout": 0.23480845064313663,
+    "learning_rate": 0.0002902756826903771,
+    "weight_decay": 1.5587695890838123e-05,
+    "batch_size": 32.0,
+    "lambda_physics": 0.51019866085025,
+    "lambda_bc": 0.14106351415785365,
+    "lambda_temporal": 0.15708481845272837,
+    "seq_len": 24.0,
+    "grad_clip": 1.368829353412844
+  },
+  "default_config": {
+    "hidden_dim": 256,
+    "n_attention_heads": 4,
+    "n_gru_layers": 2,
+    "dropout": 0.22,
+    "use_residual": true,
+    "learning_rate": 0.0008,
+    "weight_decay": 0.0002,
+    "batch_size": 32,
+    "grad_clip": 1.0,
+    "warmup_steps": 100,
+    "lambda_physics": 0.45,
+    "lambda_bc": 0.28,
+    "lambda_temporal": 0.18,
+    "seq_len": 12,
+    "pred_horizon": 6,
+    "p3_init": 3.5e-05,
+    "noise_std": 0.015,
+    "temporal_shift": 0.15,
+    "expected_mae": 14.2,
+    "expected_rmse": 20.8,
+    "expected_r2": 0.87,
+    "expected_mard": 8.9
+  },
+  "hyperparameter_importance": {
+    "dropout": 0.319,
+    "learning_rate": 0.275,
+    "lambda_temporal": 0.181,
+    "lambda_bc": 0.094,
+    "weight_decay": 0.076,
+    "lambda_physics": 0.039,
+    "grad_clip": 0.016
+  },
+  "lr_schedules": {
+    "ReduceLROnPlateau": {
+      "final_lr": 1e-06,
+      "n_reductions": 10,
+      "convergence": "GRADUAL"
+    },
+    "CosineAnnealingWarmRestarts": {
+      "final_lr": 0.00079921,
+      "min_lr": 1e-06,
+      "max_lr": 0.0008,
+      "convergence": "CYCLICAL",
+      "recommended": true
+    },
+    "WarmupCosineDecay": {
+      "final_lr": 2e-07,
+      "warmup_epochs": 100,
+      "convergence": "SMOOTH",
+      "best_for": "PINN physics loss alignment in early training"
+    }
+  },
+  "ensemble_strategy": {
+    "strategy": "Inverse-RMSE Weighted Ensemble",
+    "n_models": 3,
+    "model_weights": [
+      0.344,
+      0.333,
+      0.324
+    ],
+    "best_single_rmse": 20.8,
+    "ensemble_rmse": 21.45,
+    "improvement_pct": -3.1,
+    "inference_cost": "3x single model (parallelisable)",
+    "recommended": true
+  },
+  "convergence_summary": {
+    "trials_to_best": 11,
+    "improvement_over_default": 8.7
+  }
+}
