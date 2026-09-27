@@ -6,10 +6,12 @@ import sys
 import tempfile
 import unittest
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 _database_directory = tempfile.TemporaryDirectory(prefix="biomirror-log-health-")
 _database_path = (Path(_database_directory.name) / "test.sqlite3").as_posix()
@@ -17,6 +19,7 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{_database_path}"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import backend_api as api
+from database import PredictionHistoryRow
 
 
 def mock_groq_response():
@@ -65,6 +68,7 @@ class LogHealthEndToEndTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
         api.TWIN_CACHE.pop(self.patient_id, None)
+        api.TWIN_LAST_TICK.pop(self.patient_id, None)
         await api._db.close()
         _database_directory.cleanup()
 
@@ -366,6 +370,138 @@ class LogHealthEndToEndTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(invalid.status_code, 404, invalid.text)
         forbidden = await self.client.delete("/goals/P-OTHER/target_hba1c")
         self.assertEqual(forbidden.status_code, 403, forbidden.text)
+
+    async def test_global_forecast_actual_error_and_personalized_next_forecast(self):
+        initial_state = await api.load_twin(self.patient_id)
+        global_response = await self.client.get(f"/forecast/{self.patient_id}?hours=1")
+        self.assertEqual(global_response.status_code, 200, global_response.text)
+        global_prediction = global_response.json()["near_term_prediction"]["global_predicted_glucose_mg_dl"]
+        self.assertTrue(global_prediction)
+        self.assertEqual(global_response.json()["personalization"]["error_samples"], 0)
+
+        stored_forecasts = await api._db.get_predictions(self.patient_id, limit=10, source="forecast")
+        matched_prediction = stored_forecasts[-1]
+        async with api._db.Session() as session:
+            row = (await session.execute(
+                select(PredictionHistoryRow).where(PredictionHistoryRow.id == matched_prediction["id"])
+            )).scalar_one()
+            row.timestamp -= timedelta(minutes=5)
+            await session.commit()
+
+        observed_value = 140.0
+        observed = await self.client.post(f"/logs/{self.patient_id}/glucose", json={
+            "glucose": observed_value,
+            "meal_type": "Fasting",
+        })
+        self.assertEqual(observed.status_code, 200, observed.text)
+        feedback = observed.json()["personalization_update"]
+        expected_error = round(observed_value - global_prediction[0], 2)
+        self.assertAlmostEqual(feedback["inputs"]["error_mg_dl"], expected_error, places=2)
+        self.assertEqual(observed.json()["current_state"]["glucose"], observed_value)
+
+        anchored_state = await api.load_twin(self.patient_id)
+        self.assertEqual(anchored_state["G"], observed_value)
+        self.assertEqual(anchored_state["sim_time"], initial_state["sim_time"])
+
+        next_response = await self.client.get(f"/forecast/{self.patient_id}?hours=1")
+        self.assertEqual(next_response.status_code, 200, next_response.text)
+        next_forecast = next_response.json()
+        expected_correction = float(feedback["inputs"]["error_mg_dl"])
+        self.assertEqual(next_forecast["personalization"]["correction_mg_dl"], expected_correction)
+        raw_next = next_forecast["near_term_prediction"]["global_predicted_glucose_mg_dl"]
+        corrected_next = next_forecast["near_term_prediction"]["predicted_glucose_mg_dl"]
+        self.assertEqual(corrected_next, [round(value + expected_correction, 1) for value in raw_next])
+
+        after_forecast_state = await api.load_twin(self.patient_id)
+        self.assertEqual(after_forecast_state["G"], observed_value)
+        feedback_rows = await api._db.get_predictions(self.patient_id, limit=10, source="feedback")
+        self.assertEqual(len(feedback_rows), 1)
+
+    async def test_registration_does_not_fabricate_glucose_baseline(self):
+        suffix = uuid.uuid4().hex[:10]
+        registration = await api.register(api.UserRegister(
+            username=f"nobaseline_{suffix}",
+            email=f"nobaseline_{suffix}@example.test",
+            password="unused-test-password",
+            full_name="No Baseline Test",
+        ))
+        patient_id = registration["patient_id"]
+        self.assertIsNone(await api._db.get_twin_state(patient_id))
+        registered_user = await api._db.get_user_by_username(f"nobaseline_{suffix}")
+        self.assertIsNone(registered_user.get("baseline_glucose"))
+
+        client = AsyncClient(
+            transport=ASGITransport(app=api.app),
+            base_url="http://biomirror.test",
+            headers={"Authorization": f"Bearer {registration['access_token']}"},
+        )
+        try:
+            analytics = await client.get(f"/analytics/{patient_id}")
+            self.assertEqual(analytics.status_code, 200, analytics.text)
+            self.assertIsNone(analytics.json()["glucose"]["mean"])
+            self.assertIsNone(analytics.json()["glucose"]["tir_pct"])
+            self.assertIsNone(analytics.json()["glucose"]["hba1c"])
+
+            response = await client.post(f"/logs/{patient_id}/glucose", json={"glucose": 141})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["current_state"]["glucose"], 141.0)
+            state = await api.load_twin(patient_id)
+            self.assertEqual(state["G"], 141.0)
+            self.assertEqual(state["history"][-1]["source"], "observed")
+        finally:
+            await client.aclose()
+            api.TWIN_CACHE.pop(patient_id, None)
+            api.TWIN_LAST_TICK.pop(patient_id, None)
+
+    async def test_observed_glucose_anchors_twin_and_updates_user_correction(self):
+        state_before = await api.load_twin(self.patient_id)
+        observed_value = 140.0
+        observed = await self.client.post(f"/logs/{self.patient_id}/glucose", json={
+            "glucose": observed_value,
+            "meal_type": "Fasting",
+        })
+        self.assertEqual(observed.status_code, 200, observed.text)
+        feedback = observed.json()["personalization_update"]
+        self.assertIsNotNone(feedback)
+        stored_forecasts = await api._db.get_predictions(self.patient_id, limit=10, source="forecast")
+        prediction = next(item for item in stored_forecasts if item["id"] == feedback["inputs"]["prediction_id"])
+        expected_error = round(observed_value - prediction["predicted_glucose"][0], 2)
+        self.assertAlmostEqual(feedback["inputs"]["error_mg_dl"], expected_error, places=2)
+        self.assertEqual(prediction["inputs"]["personalization_correction_mg_dl"], 0.0)
+        self.assertEqual(observed.json()["current_state"]["glucose"], observed_value)
+
+        state_after_log = await api.load_twin(self.patient_id)
+        self.assertEqual(state_after_log["G"], observed_value)
+        self.assertEqual(state_after_log["sim_time"], state_before["sim_time"])
+
+        personalization = await api.get_prediction_personalization(self.patient_id)
+        self.assertEqual(personalization["correction_mg_dl"], expected_error)
+        self.assertEqual(personalization["sample_count"], 1)
+        self.assertEqual(await api.get_prediction_personalization("P-OTHER"), {
+            "correction_mg_dl": 0.0,
+            "sample_count": 0,
+            "recent_errors_mg_dl": [],
+        })
+
+        forecast = await self.client.get(f"/forecast/{self.patient_id}?hours=1")
+        self.assertEqual(forecast.status_code, 200, forecast.text)
+        result = forecast.json()
+        self.assertEqual(result["personalization"]["correction_mg_dl"], expected_error)
+        raw = result["near_term_prediction"]["global_predicted_glucose_mg_dl"]
+        personalized = result["near_term_prediction"]["predicted_glucose_mg_dl"]
+        self.assertEqual(personalized, [round(value + expected_error, 1) for value in raw])
+
+        second_forecast = await self.client.get(f"/forecast/{self.patient_id}?hours=1")
+        self.assertEqual(second_forecast.status_code, 200, second_forecast.text)
+        self.assertEqual(second_forecast.json()["personalization"]["correction_mg_dl"], expected_error)
+        feedback_rows = await api._db.get_predictions(self.patient_id, limit=10, source="feedback")
+        self.assertEqual(len(feedback_rows), 1)
+
+    def test_real_time_ode_step_uses_elapsed_minutes(self):
+        engine = api.BergmanEngine(p3=3.5e-5)
+        glucose_after, _ = engine.step(140.0, 0.02, 12.0, 0.0, dt=2 / 60)
+        self.assertAlmostEqual(glucose_after, 139.86, places=2)
+        self.assertLess(abs(glucose_after - 140.0), 1.0)
 
 
 if __name__ == "__main__":

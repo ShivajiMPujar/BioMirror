@@ -1844,9 +1844,9 @@
           </div>
           <div class="g4" style="margin-bottom:14px">
             <div class="card">
-              <div class="card-title">⚡ GLUCOSE</div>
+              <div class="card-title">⚡ DIGITAL TWIN ESTIMATE</div>
               <div class="metric-val" id="d-glucose" style="color:var(--c)">—</div>
-              <div class="metric-unit">mg/dL current</div>
+              <div class="metric-unit">mg/dL · modeled state</div>
               <div id="d-gbadge" class="badge b-norm" style="margin-top:8px">● —</div>
               <div class="prog-track">
                 <div class="prog-fill" id="d-gbar" style="background:var(--c);width:0%"></div>
@@ -1861,7 +1861,7 @@
               </div>
             </div>
             <div class="card">
-              <div class="card-title">🩸 RECENT LOGGED GLUCOSE</div>
+              <div class="card-title">🩸 OBSERVED GLUCOSE</div>
               <div class="metric-val" id="d-recent-glucose" style="color:var(--c);font-size:26px">—</div>
               <div class="metric-unit" id="d-recent-glucose-time">No glucose log yet</div>
               <div class="prog-track">
@@ -2467,7 +2467,7 @@
       <div class="form-group"><label class="form-label">Latest HbA1c (%)</label>
         <input id="w-hba1c" class="form-input" type="number" step=".1" placeholder="7.2"></div>
       <div class="form-group"><label class="form-label">Fasting Glucose (mg/dL)</label>
-        <input id="w-fasting" class="form-input" type="number" placeholder="140"></div>
+        <input id="w-fasting" class="form-input" type="number" placeholder="Measured glucose"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">Years with T2D</label>
@@ -2737,7 +2737,12 @@
         }
       });
       if (caption) caption.textContent = `Next ${horizonHours} hours`;
-      if (note) note.textContent = `Observed readings are solid; the dashed line is the personalized model forecast. The current model supports ${horizonHours} hours only; days 4–7 are not projected.`;
+      const personalization = forecast?.personalization || {};
+      const correction = Number(personalization.correction_mg_dl) || 0;
+      const correctionNote = personalization.error_samples
+        ? ` Recent user-specific correction: ${correction >= 0 ? '+' : ''}${correction.toFixed(1)} mg/dL from ${personalization.error_samples} matched reading(s).`
+        : ' No user-specific correction yet; it starts after a forecast is matched to an actual reading.';
+      if (note) note.textContent = `Observed readings are solid; the dashed line is the Digital Twin forecast. The current model supports ${horizonHours} hours only; days 4–7 are not projected.${correctionNote}`;
     }
 
     function renderDashboardInsights(twin, glucoseRows, forecast) {
@@ -2773,11 +2778,35 @@
       try {
         const pid = AUTH?.patient_id;
         const [twin, logs, forecast] = await Promise.all([
-          api(`/twin/${pid}`),
+          api(`/twin/${pid}`).catch(() => null),
           api(`/history/${pid}?limit=200&days=30`).catch(() => ({ logs: [] })),
           getDashboardForecast(pid),
         ]);
-        if (!twin) return;
+        if (!twin) {
+          const recentRows = logs?.logs || [];
+          const recentGlucose = recentRows.slice().reverse().find(item => item.type === 'glucose');
+          const glucoseRows = recentRows.filter(item => item.type === 'glucose' && Number.isFinite(Number(item.glucose)));
+          setVal('d-glucose', '—');
+          setVal('d-gbadge', '● NO TWIN BASELINE');
+          const glucoseBadge = document.getElementById('d-gbadge');
+          if (glucoseBadge) glucoseBadge.className = 'badge b-elev';
+          setVal('d-sens', '—'); setVal('d-rev', '—');
+          setProgFill('d-gbar', 0); setProgFill('d-sbar', 0); setProgFill('d-revbar', 0);
+          dashboardLatestLoggedGlucose = recentGlucose || null;
+          if (recentGlucose) {
+            setVal('d-recent-glucose', `${recentGlucose.glucose} mg/dL`);
+            setVal('d-recent-glucose-time', `Logged ${logTimestampDate(recentGlucose.timestamp).toLocaleString()}`);
+          } else {
+            setVal('d-recent-glucose', '—');
+            setVal('d-recent-glucose-time', 'No glucose log yet');
+          }
+          renderMetabolicShadow(null, 'unknown', recentGlucose);
+          renderDashboardForecast(forecast, glucoseRows);
+          renderDashboardInsights(null, glucoseRows, forecast);
+          setVal('dash-greet', `${new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening'}, ${AUTH?.full_name || 'Patient'}`);
+          loadNotifs();
+          return;
+        }
         const m = twin.metrics;
         const G = m.glucose, st = m.glucose_status;
         const COL_MAP = {
@@ -3201,6 +3230,7 @@
       setLogMessage('Saving securely…');
       try {
         const result = await api(`/logs/${patientId}/${path}`, { method: 'POST', body });
+        if (category === 'glucose') dashboardForecastCache = null;
         if (category === 'meal') {
           success = result.nutrition?.available
             ? 'Meal logged ✓ Nutrition estimate saved.'
@@ -3212,6 +3242,7 @@
         }
         setLogMessage(success, 'success');
         await refreshAfterHealthLog();
+        if (category === 'glucose' && !_ws) connectWebSocket();
         button.disabled = true;
         button.textContent = 'SAVED ✓';
         const message = document.getElementById('log-message');

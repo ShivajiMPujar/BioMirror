@@ -344,9 +344,9 @@ def search_food(query: str) -> list:
 
 
 def predict_meal_glucose(food_name: str, portion_g: float,
-                         current_glucose: float = 140.0,
-                         p3_index: float = 68.0,
-                         hour: int = 13) -> dict:
+                         current_glucose: Optional[float] = None,
+                         p3_index: Optional[float] = None,
+                         hour: int = 13) -> Optional[dict]:
     """
     Predict glucose response to a specific food + portion.
 
@@ -360,6 +360,8 @@ def predict_meal_glucose(food_name: str, portion_g: float,
     Returns:
         Dict with peak glucose, time to peak, curve, and recommendations
     """
+    if current_glucose is None or p3_index is None:
+        return None
     food = get_food(food_name)
     gi   = food['gi']
     # get_food() returns different key names depending on whether the food

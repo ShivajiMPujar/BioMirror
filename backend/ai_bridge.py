@@ -71,9 +71,11 @@ def compute_live_features(glucose_history: List[float], current: dict) -> dict:
     """
     if not FEATURE_ENGINEERING_AVAILABLE:
         return {}
+    if current.get('glucose') is None:
+        return {}
     try:
         hist = list(glucose_history[-9:]) if glucose_history else []
-        hist.append(current.get('glucose', 140.0))
+        hist.append(float(current['glucose']))
         n = len(hist)
         df = pd.DataFrame({
             'prev_glucose':   hist,
@@ -150,13 +152,16 @@ class PINNPredictor:
         self.metadata = {}
         self.loaded = False
         self.load_error = None
+        self.last_rejection_reason = None
 
     def load(self) -> bool:
         if not TORCH_AVAILABLE:
             self.load_error = "torch not installed"
+            self.last_rejection_reason = self.load_error
             return False
         if not os.path.exists(self.checkpoint_path):
             self.load_error = f"no checkpoint at {self.checkpoint_path}"
+            self.last_rejection_reason = self.load_error
             return False
         try:
             ckpt = torch.load(self.checkpoint_path, map_location='cpu', weights_only=False)
@@ -182,6 +187,7 @@ class PINNPredictor:
             return True
         except Exception as e:
             self.load_error = str(e)
+            self.last_rejection_reason = f"checkpoint load error: {type(e).__name__}: {e}"
             logger.error(f"[ai_bridge] PINN load failed: {e}")
             return False
 
@@ -193,6 +199,7 @@ class PINNPredictor:
             'trained_at':   self.metadata.get('trained_at') if self.loaded else None,
             'test_metrics': self.metadata.get('test_metrics') if self.loaded else None,
             'load_error':   self.load_error if not self.loaded else None,
+            'last_rejection_reason': self.last_rejection_reason,
             'torch_available': TORCH_AVAILABLE,
         }
 
@@ -206,12 +213,21 @@ class PINNPredictor:
         whenever this returns None — that fallback path is real and
         currently exercised (see module docstring).
         """
+        self.last_rejection_reason = None
         if not self.loaded:
+            self.last_rejection_reason = self.load_error or "PINN model is not loaded"
+            return None
+        current_glucose = current.get('glucose')
+        if current_glucose is None:
+            self.last_rejection_reason = "current Twin glucose estimate unavailable"
+            return None
+        if not glucose_history:
+            self.last_rejection_reason = "no actual glucose readings available for PINN history"
             return None
         try:
             t0 = time.perf_counter()
             row = {
-                'glucose_norm':       current.get('glucose', 140.0),
+                'glucose_norm':       float(current_glucose),
                 'carbs_norm':         current.get('carbs', 0.0),
                 'steps_norm':         current.get('steps', 4000),
                 'exercise_norm':      current.get('exercise_min', 0),
@@ -231,7 +247,7 @@ class PINNPredictor:
             # this is a reasonable, documented approximation, not a silent one).
             hist = list(glucose_history[-self.seq_len:]) if glucose_history else []
             while len(hist) < self.seq_len:
-                hist.insert(0, current.get('glucose', 140.0))
+                hist.insert(0, hist[0])
             seq = []
             for g in hist:
                 r = dict(row); r['glucose_norm'] = g
@@ -267,13 +283,17 @@ class PINNPredictor:
             predicted_mg_dl = inv[:, gi].tolist()
 
             # ── Plausibility gate ──
-            cur_g = current.get('glucose', 140.0)
+            cur_g = current_glucose
             implausible = (
                 any(v < _PLAUSIBLE_MIN or v > _PLAUSIBLE_MAX for v in predicted_mg_dl)
                 or any(abs(v - cur_g) > _MAX_STEP_DELTA * (i + 1)
                        for i, v in enumerate(predicted_mg_dl))
             )
             if implausible:
+                self.last_rejection_reason = (
+                    f"plausibility gate: output range {min(predicted_mg_dl):.1f}-"
+                    f"{max(predicted_mg_dl):.1f} mg/dL from baseline {cur_g:.1f}"
+                )
                 logger.warning(f"[ai_bridge] PINN output failed plausibility gate "
                                 f"(range {min(predicted_mg_dl):.0f}-{max(predicted_mg_dl):.0f} mg/dL "
                                 f"from baseline {cur_g}) — caller should fall back to Bergman")
@@ -290,6 +310,7 @@ class PINNPredictor:
                 'model_version':     self.metadata.get('model_version', 'unknown'),
             }
         except Exception as e:
+            self.last_rejection_reason = f"inference error: {type(e).__name__}: {e}"
             logger.error(f"[ai_bridge] PINN inference error: {e}")
             return None
 
@@ -329,6 +350,10 @@ def reversal_full(profile_dict: dict, logs: List[dict]) -> Optional[dict]:
     if not REVERSAL_ENGINE_AVAILABLE:
         return None
     try:
+        glucose_logs = [log for log in logs if log.get('type') == 'glucose' and log.get('glucose') is not None]
+        if not glucose_logs:
+            return None
+        baseline_glucose = glucose_logs[-1]['glucose']
         profile = PatientProfile(
             patient_id=profile_dict.get('patient_id', 'unknown'),
             age=profile_dict.get('age') or 45,
@@ -338,14 +363,14 @@ def reversal_full(profile_dict: dict, logs: List[dict]) -> Optional[dict]:
             diagnosis_years=profile_dict.get('diabetes_years') or 2,
             current_hba1c=profile_dict.get('hba1c') or 7.2,
             target_hba1c=6.4,
-            baseline_glucose=profile_dict.get('baseline_glucose') or 140.0,
+            baseline_glucose=baseline_glucose,
             baseline_steps=2654,
             p3_estimate=profile_dict.get('p3') or 3.5e-5,
         )
         daily_logs = [
             DailyLog(
                 date=datetime.fromisoformat(l['timestamp']) if isinstance(l.get('timestamp'), str) else datetime.utcnow(),
-                mean_glucose=l.get('glucose', 140.0),
+                mean_glucose=l['glucose'],
                 tir_pct=l.get('tir_pct', 63.0),
                 steps=l.get('steps', 4000),
                 exercise_min=l.get('exercise_min', 0),
@@ -353,8 +378,8 @@ def reversal_full(profile_dict: dict, logs: List[dict]) -> Optional[dict]:
                 stress_level=l.get('stress_level', 2),
                 carb_grams=l.get('carbs', 0) or l.get('carbs_g', 0) or 0,
             )
-            for l in logs[-30:]
-        ] if logs else []
+            for l in glucose_logs[-30:]
+        ] if glucose_logs else []
         return _reversal_engine.full_analysis(profile, daily_logs)
     except Exception as e:
         logger.warning(f"[ai_bridge] reversal_full failed: {e}")

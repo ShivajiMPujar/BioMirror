@@ -126,6 +126,7 @@ TWIN_CACHE:     Dict[str, dict]              = {}
 # WS_CONNECTIONS: live socket objects only — inherently runtime state, not
 # user data, and not something a database can (or should) store.
 WS_CONNECTIONS: Dict[str, List[WebSocket]]   = {}
+TWIN_LAST_TICK: Dict[str, float]             = {}
 # Populated once at startup by ai_bridge.initialize() — see startup() below.
 AI_STATUS: Dict[str, Any] = {'feature_engineering': False, 'pinn': False,
                               'pinn_status': {'available': False},
@@ -141,10 +142,11 @@ class BergmanEngine:
     def __init__(self, p3: float = 3.5e-5):
         self.p3 = p3
 
-    def step(self, G, X, I, meal):
+    def step(self, G, X, I, meal, dt=None):
+        step_minutes = self.DT if dt is None else max(0.0, dt)
         dG = -(self.P1 + X) * G + self.P1 * self.GB + meal
         dX = -self.P2 * X + self.p3 * (I - self.IB)
-        return max(40.0, min(400.0, G + dG * self.DT)), max(0.0, X + dX * self.DT)
+        return max(40.0, min(400.0, G + dG * step_minutes)), max(0.0, X + dX * step_minutes)
 
     def meal_bolus(self, carbs, elapsed, peak=45):
         if carbs <= 0: return 0.0
@@ -206,13 +208,17 @@ async def get_optional_user(token: str = Depends(oauth2_scheme)) -> Optional[dic
 def build_initial_twin(patient_id: str, profile: dict) -> dict:
     bmi = profile.get("bmi", 27.0)
     p3  = max(1e-5, 7e-5 - (bmi - 22) * 2e-6)
-    baseline_g = profile.get("baseline_glucose", 140.0)
+    baseline_g = profile.get("baseline_glucose")
+    if baseline_g is None:
+        raise ValueError("An observed glucose value is required to initialize the Digital Twin")
+    baseline_i = min(100, max(0, 7 + (baseline_g - 90) * 0.1))
     return {
         "patient_id": patient_id,
-        "G": baseline_g, "X": 0.02, "I": 12.0,
+        "G": baseline_g, "X": 0.02, "I": baseline_i,
         "p3": p3, "p3_index": round(p3 / 5e-5 * 100, 1),
         "meal_queue": [], "sim_time": 0.0,
-        "history": [], "last_event": None,
+        "history": [{"t": 0.0, "G": baseline_g, "source": "observed"}],
+        "last_event": {"type": "glucose", "value": baseline_g, "source": "observed"},
         "created_at": datetime.utcnow().isoformat(),
         "last_updated": datetime.utcnow().isoformat(),
     }
@@ -387,6 +393,68 @@ async def evaluate_recent_predictions(patient_id: str):
             await _db.save_evaluation_metrics(patient_id, metrics)
     except Exception as e:
         logger.warning(f"[AI] evaluate_recent_predictions failed for {patient_id}: {e}")
+
+
+async def get_prediction_personalization(patient_id: str) -> dict:
+    """Return this patient's recent forecast residual correction only."""
+    feedback = await _db.get_predictions(patient_id, limit=5, source="feedback")
+    errors = [float(item.get("inputs", {}).get("error_mg_dl"))
+              for item in feedback
+              if item.get("inputs", {}).get("error_mg_dl") is not None]
+    return {
+        "correction_mg_dl": round(sum(errors) / len(errors), 2) if errors else 0.0,
+        "sample_count": len(errors),
+        "recent_errors_mg_dl": errors,
+    }
+
+
+async def record_prediction_error(patient_id: str, actual_glucose: float, actual_timestamp: str) -> Optional[dict]:
+    """Match one unused forecast to an actual reading near its 5-minute horizon."""
+    try:
+        actual_time = datetime.fromisoformat(actual_timestamp)
+        forecasts = await _db.get_predictions(patient_id, limit=100, source="forecast")
+        feedback = await _db.get_predictions(patient_id, limit=100, source="feedback")
+        used_ids = {
+            item.get("inputs", {}).get("prediction_id")
+            for item in feedback if item.get("inputs", {}).get("prediction_id")
+        }
+        matches = []
+        for prediction in forecasts:
+            prediction_id = prediction.get("id")
+            values = prediction.get("predicted_glucose") or []
+            timestamp = prediction.get("timestamp")
+            if not prediction_id or prediction_id in used_ids or not values or not timestamp:
+                continue
+            prediction_time = datetime.fromisoformat(timestamp)
+            if prediction_time.tzinfo != actual_time.tzinfo or prediction_time >= actual_time:
+                continue
+            error_seconds = abs((prediction_time + timedelta(minutes=5) - actual_time).total_seconds())
+            if error_seconds <= 6 * 60:
+                matches.append((error_seconds, prediction_time, prediction, float(values[0])))
+        if not matches:
+            return None
+
+        _, prediction_time, prediction, predicted_glucose = min(matches, key=lambda match: (match[0], -match[1].timestamp()))
+        error = round(float(actual_glucose) - predicted_glucose, 2)
+        record = await _db.add_prediction(patient_id, {
+            "source": "feedback",
+            "inputs": {
+                "prediction_id": prediction["id"],
+                "prediction_timestamp": prediction_time.isoformat(),
+                "actual_timestamp": actual_timestamp,
+                "actual_glucose": round(float(actual_glucose), 1),
+                "personalized_prediction": round(predicted_glucose, 1),
+                "error_mg_dl": error,
+                "correction_used_mg_dl": float(prediction.get("inputs", {}).get("personalization_correction_mg_dl", 0.0) or 0.0),
+            },
+            "predicted_glucose": [round(predicted_glucose, 1)],
+            "model_version": prediction.get("model_version"),
+            "model_status": prediction.get("model_status"),
+        })
+        return record
+    except Exception as e:
+        logger.warning(f"[AI] prediction-error matching failed for {patient_id}: {e}")
+        return None
 
 
 # ─────────────────────────────────────────────
@@ -884,15 +952,13 @@ async def register(user: UserRegister):
         "patient_id":  patient_id,
         "role":        "patient",
         "bmi":         27.0,
-        "baseline_glucose": 140.0,
         "diabetes_risk": 1,
         "profile_complete": False,
         "email_verification_token": verify_token,
     }
     created = await _db.create_user(profile)
-    await save_twin(patient_id, build_initial_twin(patient_id, created))
     await push_notification(patient_id, "Welcome to BioMirror! 🧬",
-                      "Your Digital Twin has been initialized. Complete your profile to personalize it.")
+                      "Complete your profile, then log a glucose reading to establish your Digital Twin baseline.")
     refresh = make_refresh_token(user.username)
     await _db.save_refresh_token(user.username, refresh, datetime.utcnow() + timedelta(days=REFRESH_TOKEN_DAYS))
     logger.info(f"[DEV] Email verification token for {user.email}: {verify_token} "
@@ -1027,16 +1093,33 @@ async def update_profile(patient_id: str, profile: PatientProfile,
     updates["profile_complete"] = True
     updated = await _db.update_user(uname, updates)
 
-    # Re-initialize twin with updated profile
+    # Recalibrate an existing twin; only an explicitly supplied glucose
+    # baseline may establish or replace its glucose anchor.
     bmi = updated.get("bmi", 27.0)
     p3  = max(1e-5, 7e-5 - (bmi - 22) * 2e-6)
     state = await load_twin(patient_id)
     if state:
         state["p3"]       = p3
         state["p3_index"] = round(p3 / 5e-5 * 100, 1)
-        bg = updates.get("baseline_glucose") or updated.get("baseline_glucose", 140.0)
-        state["G"] = bg
+        if "baseline_glucose" in updates:
+            state["G"] = updates["baseline_glucose"]
+            state["I"] = min(100, max(0, 7 + (state["G"] - 90) * 0.1))
+            state["history"].append({"t": state["sim_time"], "G": state["G"], "source": "observed"})
+            if len(state["history"]) > 288:
+                state["history"].pop(0)
+            TWIN_LAST_TICK[patient_id] = asyncio.get_running_loop().time()
         await save_twin(patient_id, state)
+    elif "baseline_glucose" in updates:
+        await save_twin(patient_id, build_initial_twin(patient_id, updated))
+
+    if "baseline_glucose" in updates:
+        baseline_entry = await add_log(patient_id, "glucose", {
+            "glucose": updates["baseline_glucose"],
+            "meal_type": "Fasting",
+            "notes": "User-entered profile baseline",
+        })
+        await record_prediction_error(patient_id, updates["baseline_glucose"], baseline_entry["timestamp"])
+        await evaluate_recent_predictions(patient_id)
 
     await push_notification(patient_id, "Profile Updated ✓",
                       "Your Digital Twin has been recalibrated with your new profile data.")
@@ -1073,17 +1156,24 @@ async def log_glucose(patient_id: str, log: GlucoseLog, user=Depends(get_current
     if user["patient_id"] != patient_id:
         raise HTTPException(403, "Access denied")
     state = await load_twin(patient_id)
+    newly_initialized = state is None
     if not state:
-        raise HTTPException(404, "Digital Twin not found")
+        state = build_initial_twin(patient_id, {**user, "baseline_glucose": log.glucose})
 
-    eng = BergmanEngine(p3=state["p3"])
     G_prev = state["G"]
+
+    if not newly_initialized:
+        try:
+            await get_forecast(patient_id, hours=1, user=user)
+        except Exception as e:
+            logger.warning(f"[AI] pre-measurement forecast unavailable for {patient_id}: {e}")
 
     recent_stress = await _db.get_logs(patient_id, "stress", limit=1)
     effective_stress = (recent_stress[-1].get("stress_level", log.stress_level)
                         if recent_stress and log.stress_level == 2 else log.stress_level)
 
-    # Update twin with new anchor reading
+    # An actual reading anchors the state exactly; elapsed-time simulation
+    # resumes on subsequent wall-clock ticks, not as an immediate 5-minute jump.
     state["G"] = log.glucose
     state["I"] = min(100, max(0, 7 + (log.glucose - 90) * 0.1))
 
@@ -1096,19 +1186,14 @@ async def log_glucose(patient_id: str, log: GlucoseLog, user=Depends(get_current
         state["p3"] = min(state["p3"] * (1 + log.exercise_min * 0.005), 8e-5)
         state["p3_index"] = round(state["p3"] / 5e-5 * 100, 1)
 
-    # ODE step
-    meal_in = sum(eng.meal_bolus(m["carbs"], m["elapsed"]) for m in state["meal_queue"])
-    for m in state["meal_queue"]:
-        m["elapsed"] += eng.DT
-    G_new, X_new = eng.step(state["G"], state["X"], state["I"], meal_in)
-    state["G"] = G_new; state["X"] = X_new
-    state["sim_time"] += eng.DT
-    state["history"].append({"t": state["sim_time"], "G": G_new})
+    if not newly_initialized:
+        state["history"].append({"t": state["sim_time"], "G": log.glucose, "source": "observed"})
     if len(state["history"]) > 288:
         state["history"].pop(0)
     state["last_updated"] = datetime.utcnow().isoformat()
     state["last_event"] = {"type": "glucose", "value": log.glucose,
                             "timestamp": datetime.utcnow().isoformat()}
+    TWIN_LAST_TICK[patient_id] = asyncio.get_running_loop().time()
     await save_twin(patient_id, state)
 
     entry = await add_log(patient_id, "glucose", {
@@ -1116,12 +1201,15 @@ async def log_glucose(patient_id: str, log: GlucoseLog, user=Depends(get_current
         "carbs": log.carbs, "food": log.food,
         "steps": log.steps, "exercise_min": log.exercise_min,
         "heart_rate": log.heart_rate, "stress_level": effective_stress,
-        "notes": log.notes, "post_G": round(G_new, 1),
+        "notes": log.notes,
     })
 
     # Phase 2: opportunistically update retrospective evaluation metrics
     # (matches recent forecast predictions against this and other actuals)
     await evaluate_recent_predictions(patient_id)
+    personalization_update = await record_prediction_error(
+        patient_id, log.glucose, entry["timestamp"]
+    )
 
     # Phase 3 Part C: every logged data point grows the personal timeline
     try:
@@ -1139,8 +1227,9 @@ async def log_glucose(patient_id: str, log: GlucoseLog, user=Depends(get_current
 
     await broadcast(patient_id, {"event": "twin_update", **metrics})
     return {"success": True, "log_id": entry["id"],
-            "glucose_change": round(G_new - G_prev, 1),
+            "glucose_change": round(log.glucose - G_prev, 1),
             "current_state": metrics,
+            "personalization_update": personalization_update,
             "precision_nudges": generate_nudges(metrics)}
 
 
@@ -1149,8 +1238,8 @@ async def log_meal(patient_id: str, log: MealLog, user=Depends(get_current_user)
     if user["patient_id"] != patient_id:
         raise HTTPException(403, "Access denied")
     state = await load_twin(patient_id)
-    current_glucose = state["G"] if state else 140.0
-    p3_index = state["p3_index"] if state else 68.0
+    current_glucose = state["G"] if state else None
+    p3_index = state["p3_index"] if state else None
     hour = datetime.utcnow().hour
 
     nutrition = None
@@ -1187,7 +1276,7 @@ async def log_meal(patient_id: str, log: MealLog, user=Depends(get_current_user)
 
     carbs_g = float(log_data.get("carbs_g") or 0)
     prediction = None
-    if _AI_BRIDGE_AVAILABLE and carbs_g > 0:
+    if _AI_BRIDGE_AVAILABLE and state and carbs_g > 0:
         prediction = _ai.predict_meal_from_carbs(prediction_food, carbs_g,
                                                    current_glucose, p3_index, hour)
 
@@ -1596,7 +1685,9 @@ async def get_forecast(patient_id: str, hours: int = Query(24, ge=1, le=72),
     # Bergman-derived short-term estimate + analytical SHAP whenever the
     # PINN is unavailable or its output fails the plausibility check in
     # ai_bridge.py (see that file's docstring for why/when that happens).
-    glucose_hist = [h["G"] for h in state.get("history", [])]
+    observed_glucose_logs = await _db.get_logs(patient_id, "glucose", limit=12) if _DB_AVAILABLE else []
+    glucose_hist = [float(item["glucose"]) for item in observed_glucose_logs
+                    if item.get("glucose") is not None]
     ctx = await build_personalized_context(patient_id, user, state)   # Phase 3 Part E
     engineered = {}
     if _AI_BRIDGE_AVAILABLE:
@@ -1613,6 +1704,11 @@ async def get_forecast(patient_id: str, hours: int = Query(24, ge=1, le=72),
             'glycemic_load': engineered.get('glycemic_load_score', 20.0),
             'stress_proxy': ctx['stress_level'] / 5,
         })
+        pinn_rejection_reason = (
+            None if pinn_result else getattr(_ai.PINN, "last_rejection_reason", None)
+        )
+    else:
+        pinn_rejection_reason = "AI bridge unavailable"
 
     if pinn_result:
         model_status  = "pinn"
@@ -1628,6 +1724,18 @@ async def get_forecast(patient_id: str, hours: int = Query(24, ge=1, le=72),
         uncertainty   = None
         inference_ms  = None
         model_version = "bergman_v1"
+
+    global_near_term = [round(float(value), 1) for value in near_term]
+    personalization = await get_prediction_personalization(patient_id)
+    correction = float(personalization["correction_mg_dl"])
+
+    def apply_correction(values: list) -> list:
+        return [round(max(40.0, min(400.0, float(value) + correction)), 1) for value in values]
+
+    personalized_baseline = apply_correction(traj)
+    personalized_forecast = apply_correction(forecast)
+    personalized_near_term = apply_correction(global_near_term)
+    tir = round(sum(1 for value in personalized_forecast if 70 <= value <= 180) / N * 100, 1)
 
     shap_result = None
     if _AI_BRIDGE_AVAILABLE:
@@ -1649,24 +1757,33 @@ async def get_forecast(patient_id: str, hours: int = Query(24, ge=1, le=72),
     result = {
         "patient_id":  patient_id,
         "forecast_h":  hours,
-        "baseline":    traj,
-        "with_meals":  forecast,
+        "baseline":    personalized_baseline,
+        "with_meals":  personalized_forecast,
         "labels":      [f"{k*5//60:02d}:{k*5%60:02d}" for k in range(N)],
         "summary": {
             "current_glucose": round(G0, 1),
             "tir_forecast":    tir,
-            "peak_forecast":   max(forecast),
-            "spike_risk":      "HIGH" if max(forecast) > 200 else
-                               "MEDIUM" if max(forecast) > 160 else "LOW",
+            "peak_forecast":   max(personalized_forecast),
+            "spike_risk":      "HIGH" if max(personalized_forecast) > 200 else
+                               "MEDIUM" if max(personalized_forecast) > 160 else "LOW",
             "p3_index":        state["p3_index"],
         },
         "shap": shap_out,
+        "personalization": {
+            "correction_mg_dl": correction,
+            "error_samples": personalization["sample_count"],
+            "method": "mean of the five most recent matched actual-minus-predicted errors",
+        },
         # Phase 2 additions — additive only, nothing above changed shape
         "near_term_prediction": {
-            "predicted_glucose_mg_dl": [round(v, 1) for v in near_term],
+            "global_predicted_glucose_mg_dl": global_near_term,
+            "predicted_glucose_mg_dl": personalized_near_term,
             "horizon_minutes": 30,
             "model_status":    model_status,
             "model_version":   model_version,
+            "pinn_rejection_reason": pinn_rejection_reason,
+            "personalization_correction_mg_dl": correction,
+            "personalization_samples": personalization["sample_count"],
             "confidence":      confidence,
             "uncertainty_std": uncertainty,
             "inference_time_ms": inference_ms,
@@ -1677,10 +1794,17 @@ async def get_forecast(patient_id: str, hours: int = Query(24, ge=1, le=72),
     if _DB_AVAILABLE:
         await _db.add_prediction(patient_id, {
             "source": "forecast",
-            "inputs": {"hours": hours, "current_glucose": G0, "p3_index": state["p3_index"]},
+            "inputs": {
+                "hours": hours, "current_glucose": G0, "p3_index": state["p3_index"],
+                "latest_observed_glucose": glucose_hist[-1] if glucose_hist else None,
+                "global_predicted_glucose": global_near_term,
+                "personalization_correction_mg_dl": correction,
+                "personalization_samples": personalization["sample_count"],
+                "pinn_rejection_reason": pinn_rejection_reason,
+            },
             "engineered_features": engineered,
-            "predicted_glucose": [round(v, 1) for v in near_term],
-            "peak_glucose": max(forecast),
+            "predicted_glucose": personalized_near_term,
+            "peak_glucose": max(personalized_forecast),
             "tir_pct": tir,
             "confidence": confidence,
             "uncertainty_std": uncertainty,
@@ -2267,9 +2391,9 @@ async def get_analytics(patient_id: str, user=Depends(get_current_user)):
     meal_logs    = [l for l in logs if l.get("type") == "meal"]
     act_logs     = [l for l in logs if l.get("type") == "activity"]
 
-    mean_g = round(sum(g_values)/len(g_values), 1) if g_values else metrics.get("glucose", 140)
-    tir    = round(sum(1 for g in g_values if 70<=g<=180)/len(g_values)*100, 1) if g_values else metrics.get("tir_pct", 63)
-    hba1c  = round((mean_g + 46.7) / 28.7, 2)
+    mean_g = round(sum(g_values)/len(g_values), 1) if g_values else None
+    tir    = round(sum(1 for g in g_values if 70<=g<=180)/len(g_values)*100, 1) if g_values else None
+    hba1c  = round((mean_g + 46.7) / 28.7, 2) if mean_g is not None else None
     avg_steps = round(sum(l.get("steps", 0) or 0 for l in glucose_logs) / max(len(glucose_logs), 1))
     avg_carbs = round(sum((l.get("carbs_g") or l.get("carbs") or 0) for l in meal_logs + glucose_logs)
                       / max(len(meal_logs) + len(glucose_logs), 1), 1)
@@ -2287,9 +2411,9 @@ async def get_analytics(patient_id: str, user=Depends(get_current_user)):
             "hyper":     sum(1 for g in g_values if g > 180),
         },
         "reversal": {
-            "score":              metrics.get("reversal_score", 60),
-            "insulin_sensitivity": metrics.get("insulin_sensitivity", 68),
-            "metabolic_age":      metrics.get("metabolic_age", 44),
+            "score":              metrics.get("reversal_score"),
+            "insulin_sensitivity": metrics.get("insulin_sensitivity"),
+            "metabolic_age":      metrics.get("metabolic_age"),
         },
         "lifestyle": {
             "avg_steps":    avg_steps,
@@ -2356,16 +2480,28 @@ async def ws_twin(websocket: WebSocket, patient_id: str):
         await websocket.send_json({"error": "Twin not found"})
         await websocket.close(); return
     tick_count = 0
+    loop = asyncio.get_running_loop()
+    TWIN_LAST_TICK.setdefault(patient_id, loop.time())
     try:
         eng = BergmanEngine(p3=state["p3"])
         while True:
-            meal_in = sum(eng.meal_bolus(m["carbs"], m["elapsed"])
-                          for m in state.get("meal_queue", []))
-            for m in state.get("meal_queue", []):
-                m["elapsed"] += eng.DT
-            G, X = eng.step(state["G"], state["X"], state["I"], meal_in)
-            state["G"] = G; state["X"] = X; state["sim_time"] += eng.DT
-            state["history"].append({"t": state["sim_time"], "G": G})
+            tick_now = loop.time()
+            elapsed_minutes = max(0.0, (tick_now - TWIN_LAST_TICK.get(patient_id, tick_now)) / 60.0)
+            TWIN_LAST_TICK[patient_id] = tick_now
+            remaining_minutes = elapsed_minutes
+            while remaining_minutes > 1e-9:
+                step_minutes = min(eng.DT, remaining_minutes)
+                eng.p3 = state["p3"]
+                meal_in = sum(eng.meal_bolus(m["carbs"], m["elapsed"])
+                              for m in state.get("meal_queue", []))
+                for meal in state.get("meal_queue", []):
+                    meal["elapsed"] += step_minutes
+                G, X = eng.step(state["G"], state["X"], state["I"], meal_in, dt=step_minutes)
+                state["G"] = G; state["X"] = X; state["sim_time"] += step_minutes
+                remaining_minutes -= step_minutes
+            if (not state["history"] or
+                    state["sim_time"] - float(state["history"][-1].get("t", 0)) >= eng.DT):
+                state["history"].append({"t": state["sim_time"], "G": state["G"], "source": "estimated"})
             if len(state["history"]) > 288:
                 state["history"].pop(0)
             tick_count += 1

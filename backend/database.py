@@ -72,7 +72,7 @@ if SQLA_OK:
         diabetes_years      = Column(Integer, nullable=True)
         hba1c               = Column(Float, nullable=True)
         hba1c_date          = Column(String(20), nullable=True)
-        baseline_glucose    = Column(Float, default=140.0)
+        baseline_glucose    = Column(Float, nullable=True)
         medications         = Column(JSON, default=list)
         activity_level      = Column(String(20), nullable=True)
         goal                = Column(String(30), nullable=True)
@@ -116,7 +116,7 @@ if SQLA_OK:
     class TwinStateRow(Base):
         __tablename__ = "twin_state"
         patient_id   = Column(String(20), primary_key=True)
-        G            = Column(Float, default=140.0)
+        G            = Column(Float, nullable=False)
         X            = Column(Float, default=0.02)
         I            = Column(Float, default=12.0)
         p3           = Column(Float, default=3.5e-5)
@@ -455,7 +455,7 @@ class DatabaseManager:
                 username=profile["username"], email=profile["email"],
                 password_hash=profile["password"], full_name=profile.get("full_name", ""),
                 patient_id=profile["patient_id"], role=profile.get("role", "patient"),
-                bmi=profile.get("bmi", 27.0), baseline_glucose=profile.get("baseline_glucose", 140.0),
+                bmi=profile.get("bmi", 27.0), baseline_glucose=profile.get("baseline_glucose"),
                 diabetes_risk=profile.get("diabetes_risk", 1),
                 profile_complete=profile.get("profile_complete", False),
                 email_verified=False,
