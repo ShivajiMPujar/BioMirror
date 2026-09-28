@@ -849,9 +849,9 @@
     .dashboard-insight-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) }
     .dashboard-panel { min-width: 0 }
     .dashboard-panel .card-title { display: flex; justify-content: space-between; align-items: baseline; gap: 10px }
-    .dashboard-main-grid { grid-template-columns: minmax(320px, .85fr) minmax(560px, 1.55fr); align-items: stretch }
+    .dashboard-main-grid { grid-template-columns: minmax(280px, .8fr) repeat(2, minmax(0, 1fr)); align-items: stretch }
     .dashboard-main-grid > .dashboard-panel { min-height: 490px; height: 100%; display: flex; flex-direction: column }
-    .dashboard-trend-card .ch-wrap { height: 350px; flex: 0 0 350px }
+    .dashboard-trend-card .ch-wrap { height: 300px; flex: 0 0 300px }
     .trend-caption { color: var(--tm); font: 10px/1.5 var(--fm); text-align: right }
     .chart-state { min-height: 170px; display: flex; align-items: center; justify-content: center; color: var(--tm); font: 11px/1.6 var(--fm); text-align: center; padding: 20px }
     .dashboard-forecast-note { color: var(--tm); font: 10px/1.55 var(--fm); padding-top: 9px; border-top: 1px solid rgba(0, 212, 255, .1) }
@@ -893,9 +893,15 @@
     .history-table .muted { color: var(--tm) }
     .history-error { color: #fca5a5; padding: 22px; font: 11px/1.6 var(--fm); text-align: center }
     .insights-kpis { margin-bottom: 14px }
-    .insights-main-grid { grid-template-columns: minmax(0, 1.4fr) minmax(280px, .9fr) }
+    .insights-main-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) }
     .insights-main-grid .ch-wrap { height: 290px }
-    .insights-pattern { display: flex; flex-direction: column; gap: 10px }
+    .insights-chart-card { min-width: 0 }
+    .insights-toolbar { margin: 0 0 10px }
+    .trend-period-control { display: flex; align-items: center; gap: 8px; color: var(--tm); font: 10px var(--fm) }
+    .insights-chart-caption { color: var(--tm); font: 10px/1.5 var(--fm); margin: -4px 0 8px }
+    .insights-weekly { margin-top: 14px }
+    .insights-weekly-subtitle { color: var(--c); font: 10px var(--fm); letter-spacing: 1.4px; margin: 18px 0 10px }
+    .insights-observations { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px }
     .insight-item { padding: 11px 12px; border-left: 2px solid var(--c); background: rgba(0, 0, 0, .18); color: var(--t); font-size: 12px; line-height: 1.55 }
     .insight-item small { display: block; color: var(--tm); font: 10px/1.5 var(--fm); margin-top: 4px }
     .insights-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px }
@@ -1898,10 +1904,15 @@
                 </div>
               </div>
             </section>
+            <section class="card dashboard-panel dashboard-trend-card" aria-labelledby="d-observed-title">
+              <div class="card-title" id="d-observed-title">◉ LOGGED GLUCOSE TREND <span class="trend-caption">Past 7 days</span></div>
+              <div class="ch-wrap"><canvas id="c-dash-observed" aria-label="Logged glucose readings over the past seven days"></canvas></div>
+              <div id="d-observed-state" class="dashboard-forecast-note" role="status">Loading logged readings…</div>
+            </section>
             <section class="card dashboard-panel dashboard-trend-card" aria-labelledby="d-forecast-title">
-              <div class="card-title" id="d-forecast-title">↗ PREDICTED GLUCOSE TREND <span class="trend-caption" id="d-forecast-caption">Personal forecast</span></div>
-              <div class="ch-wrap"><canvas id="c-dash-forecast" aria-label="Observed glucose history and personalized glucose forecast"></canvas></div>
-              <div id="d-forecast-state" class="dashboard-forecast-note" role="status">Loading current-user forecast…</div>
+              <div class="card-title" id="d-forecast-title">↗ PREDICTED GLUCOSE TREND <span class="trend-caption" id="d-forecast-caption">Next 72 hours</span></div>
+              <div class="ch-wrap"><canvas id="c-dash-prediction" aria-label="Digital Twin model-predicted glucose trend"></canvas></div>
+              <div id="d-forecast-state" class="dashboard-forecast-note" role="status">Loading model forecast…</div>
             </section>
           </div>
           <section class="card dashboard-panel dashboard-key-panel" aria-labelledby="d-key-insights-title">
@@ -2265,19 +2276,34 @@
           <div class="g4 insights-kpis" id="week-cards">
             <div class="loading" style="grid-column:1/-1">Loading…</div>
           </div>
+          <div class="history-toolbar insights-toolbar">
+            <div class="card-title">GLUCOSE TRENDS</div>
+            <label class="trend-period-control">Period
+              <select id="insights-period" class="form-input" style="width:130px;padding:6px 10px;font-size:11px" onchange="loadInsights()">
+                <option value="7" selected>1 week</option>
+                <option value="30">1 month</option>
+              </select>
+            </label>
+          </div>
           <div class="insights-main-grid">
-            <div class="card">
-              <div class="card-title">📈 RECENT GLUCOSE PATTERN</div>
-              <div class="ch-wrap"><canvas id="c-week-g" aria-label="Recent logged glucose pattern"></canvas></div>
+            <div class="card insights-chart-card">
+              <div class="card-title">📈 LOGGED GLUCOSE TREND</div>
+              <div class="insights-chart-caption" id="insights-logged-caption">Your recorded readings</div>
+              <div class="ch-wrap"><canvas id="c-week-g" aria-label="Logged glucose trend"></canvas></div>
               <div id="insights-chart-state" class="chart-state" hidden></div>
             </div>
-            <div class="card insights-pattern">
-              <div class="card-title">💡 WHAT YOUR DATA SHOWS</div>
-              <div id="week-insights"></div>
+            <div class="card insights-chart-card">
+              <div class="card-title">↗ MODEL-PREDICTED TREND</div>
+              <div class="insights-chart-caption">Digital Twin estimate · up to 72 hours</div>
+              <div class="ch-wrap"><canvas id="c-insights-prediction" aria-label="Digital Twin predicted glucose trend"></canvas></div>
+              <div id="insights-prediction-state" class="chart-state" hidden></div>
             </div>
           </div>
-          <div class="card">
+          <div class="card insights-weekly">
             <div class="card-title">📋 HEALTH PATTERNS THIS WEEK</div>
+            <div class="insights-weekly-subtitle">WHAT YOUR DATA SHOWS</div>
+            <div id="week-insights" class="insights-observations"></div>
+            <div class="insights-weekly-subtitle">WEEKLY SUMMARY</div>
             <div id="week-detail"></div>
           </div>
         </div>
@@ -2680,69 +2706,84 @@
     }
 
     function renderDashboardForecast(forecast, glucoseRows) {
-      const canvas = document.getElementById('c-dash-forecast');
+      const observedCanvas = document.getElementById('c-dash-observed');
+      const observedWrap = observedCanvas?.parentElement;
+      const observedNote = document.getElementById('d-observed-state');
+      const predictionCanvas = document.getElementById('c-dash-prediction');
+      const predictionWrap = predictionCanvas?.parentElement;
       const note = document.getElementById('d-forecast-state');
       const caption = document.getElementById('d-forecast-caption');
       const values = forecast?.baseline;
       const horizonHours = Number(forecast?.forecast_h) || 0;
-      if (!canvas || !Array.isArray(values) || !values.length || !horizonHours) {
-        if (CHTS['c-dash-forecast']) { CHTS['c-dash-forecast'].destroy(); delete CHTS['c-dash-forecast']; }
-        if (canvas) canvas.style.display = 'none';
-        if (note) note.textContent = 'A forecast is not available right now. No values are shown.';
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const observed = glucoseRows.filter(item => logTimestampDate(item.timestamp).getTime() >= cutoff).slice(-6);
+      const observedLabels = observed.map(item => {
+        const date = logTimestampDate(item.timestamp);
+        return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      });
+
+      if (observedCanvas && observed.length) {
+        observedCanvas.style.display = '';
+        if (observedWrap) observedWrap.style.display = '';
+        if (observedNote) observedNote.textContent = `${observed.length} logged reading(s) from the past 7 days. This chart contains recorded values only.`;
+        if (typeof Chart !== 'undefined') {
+          mkLine('c-dash-observed', observedLabels, [{
+            label: 'Logged glucose', data: observed.map(item => Number(item.glucose)), borderColor: CY,
+            backgroundColor: 'transparent', borderWidth: 2, pointRadius: 3, pointHoverRadius: 5,
+            tension: .25, spanGaps: false
+          }], 40, 300);
+        } else drawSimpleLineChart('c-dash-observed', observed.map(item => Number(item.glucose)), observedLabels, CY, 40, 300);
+      } else {
+        if (CHTS['c-dash-observed']) { CHTS['c-dash-observed'].destroy(); delete CHTS['c-dash-observed']; }
+        if (observedCanvas) observedCanvas.style.display = 'none';
+        if (observedWrap) observedWrap.style.display = 'none';
+        if (observedNote) observedNote.textContent = 'No logged glucose readings are available from the past 7 days.';
+      }
+
+      if (!predictionCanvas || !Array.isArray(values) || !values.length || !horizonHours) {
+        if (CHTS['c-dash-prediction']) { CHTS['c-dash-prediction'].destroy(); delete CHTS['c-dash-prediction']; }
+        if (predictionCanvas) predictionCanvas.style.display = 'none';
+        if (predictionWrap) predictionWrap.style.display = 'none';
+        if (note) note.textContent = 'A model forecast is not available right now. No predicted values are shown.';
         if (caption) caption.textContent = 'Unavailable';
         return;
       }
 
-      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      const observed = glucoseRows.filter(item => logTimestampDate(item.timestamp).getTime() >= cutoff).slice(-6);
-      const recentLabels = observed.map(item => {
-        const date = logTimestampDate(item.timestamp);
-        return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-      });
       const forecastPoints = [];
       const days = Math.floor(horizonHours / 24);
       for (let day = 0; day <= days; day++) {
         const index = day === 0 ? 0 : Math.min(values.length - 1, day * 24 * 12 - 1);
         forecastPoints.push({ label: day === 0 ? '+5 min' : `+${day} day${day === 1 ? '' : 's'}`, value: Number(values[index]) });
       }
-      const labels = [...recentLabels, ...forecastPoints.map(point => point.label)];
-      const observedValues = [...observed.map(item => Number(item.glucose)), ...forecastPoints.map(() => null)];
-      const forecastValues = [...observed.map(() => null), ...forecastPoints.map(point => point.value)];
-
-      canvas.style.display = '';
+      const validPoints = forecastPoints.filter(point => Number.isFinite(point.value));
+      if (!validPoints.length) {
+        if (CHTS['c-dash-prediction']) { CHTS['c-dash-prediction'].destroy(); delete CHTS['c-dash-prediction']; }
+        if (predictionCanvas) predictionCanvas.style.display = 'none';
+        if (predictionWrap) predictionWrap.style.display = 'none';
+        if (note) note.textContent = 'The model did not return usable prediction values.';
+        if (caption) caption.textContent = 'Unavailable';
+        return;
+      }
+      predictionCanvas.style.display = '';
+      if (predictionWrap) predictionWrap.style.display = '';
       if (typeof Chart === 'undefined') {
         if (note) note.textContent = 'The forecast is available, but chart rendering is unavailable in this browser.';
         if (caption) caption.textContent = `${horizonHours}-hour model forecast`;
+        drawSimpleLineChart('c-dash-prediction', validPoints.map(point => point.value), validPoints.map(point => point.label), '#a78bfa', 40, 300);
         return;
       }
-      if (CHTS['c-dash-forecast']) CHTS['c-dash-forecast'].destroy();
-      const context = canvas.getContext('2d');
-      CHTS['c-dash-forecast'] = new Chart(context, {
-        type: 'line',
-        data: { labels, datasets: [
-          { label: 'Observed · logged', data: observedValues, borderColor: CY, backgroundColor: 'transparent', borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, tension: .25, spanGaps: false },
-          { label: 'Predicted · twin model', data: forecastValues, borderColor: '#a78bfa', backgroundColor: 'transparent', borderWidth: 2, borderDash: [6, 4], pointRadius: 3, pointHoverRadius: 5, tension: .25, spanGaps: false },
-        ] },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          interaction: { mode: 'nearest', intersect: false },
-          plugins: {
-            legend: { position: 'bottom', labels: { color: '#94a3b8', boxWidth: 12, padding: 12, font: { size: 10 } } },
-            tooltip: { callbacks: { label: item => `${item.dataset.label}: ${Number(item.raw).toFixed(1)} mg/dL` } }
-          },
-          scales: {
-            x: { grid: { color: 'rgba(0,212,255,.05)' }, ticks: { color: '#94a3b8', maxTicksLimit: 7, maxRotation: 0, autoSkip: true } },
-            y: { title: { display: true, text: 'Glucose (mg/dL)', color: '#94a3b8', font: { size: 10 } }, grid: { color: 'rgba(0,212,255,.06)' }, ticks: { color: '#94a3b8' } }
-          }
-        }
-      });
+      mkLine('c-dash-prediction', validPoints.map(point => point.label), [{
+        label: 'Digital Twin prediction', data: validPoints.map(point => point.value), borderColor: '#a78bfa',
+        backgroundColor: 'rgba(167,139,250,0.08)', borderWidth: 2, pointRadius: 3,
+        pointHoverRadius: 5, tension: .25, fill: true, spanGaps: false
+      }], 40, 300);
       if (caption) caption.textContent = `Next ${horizonHours} hours`;
       const personalization = forecast?.personalization || {};
       const correction = Number(personalization.correction_mg_dl) || 0;
       const correctionNote = personalization.error_samples
         ? ` Recent user-specific correction: ${correction >= 0 ? '+' : ''}${correction.toFixed(1)} mg/dL from ${personalization.error_samples} matched reading(s).`
         : ' No user-specific correction yet; it starts after a forecast is matched to an actual reading.';
-      if (note) note.textContent = `Observed readings are solid; the dashed line is the Digital Twin forecast. The current model supports ${horizonHours} hours only; days 4–7 are not projected.${correctionNote}`;
+      if (note) note.textContent = `Model-predicted values only; logged readings are shown in the separate chart. The forecast supports ${horizonHours} hours.${correctionNote}`;
     }
 
     function renderDashboardInsights(twin, glucoseRows, forecast) {
@@ -4396,23 +4437,34 @@
       const insightList = document.getElementById('week-insights');
       const detail = document.getElementById('week-detail');
       const chartState = document.getElementById('insights-chart-state');
+      const predictionState = document.getElementById('insights-prediction-state');
+      const periodDays = Number(document.getElementById('insights-period')?.value) || 7;
+      const periodLabel = periodDays === 7 ? 'week' : 'month';
       if (cards) cards.innerHTML = '<div class="loading" style="grid-column:1/-1">Loading insights…</div>';
       if (insightList) insightList.innerHTML = '<div class="loading">Reading your recent data…</div>';
       if (chartState) chartState.hidden = true;
+      if (predictionState) predictionState.hidden = true;
       try {
-        const [summary, glucoseHistory, twin] = await Promise.all([
+        const [summary, glucoseHistory, twin, forecast] = await Promise.all([
           api(`/summary/${AUTH.patient_id}/weekly`),
-          api(`/history/${AUTH.patient_id}/glucose?days=14`),
+          api(`/history/${AUTH.patient_id}/glucose?days=${periodDays}`),
           api(`/twin/${AUTH.patient_id}`),
+          api(`/forecast/${AUTH.patient_id}?hours=72`).catch(error => {
+            console.warn('Insights forecast:', error);
+            return null;
+          }),
         ]);
         const glucose = summary.glucose || {};
         const readings = (glucoseHistory?.readings || []).filter(item => Number.isFinite(Number(item.glucose)));
         const mean = glucose.mean_mg_dl;
+        const periodMean = readings.length
+          ? (readings.reduce((sum, item) => sum + Number(item.glucose), 0) / readings.length).toFixed(1)
+          : null;
         const activity = summary.activity || {};
         const sleep = summary.sleep || {};
         const cardsData = [
-          ['AVERAGE GLUCOSE', mean != null ? `${mean} mg/dL` : 'No data yet', 'var(--c)'],
-          ['READINGS', readings.length || 'No data yet', 'var(--c)'],
+          [`AVERAGE GLUCOSE · ${periodLabel.toUpperCase()}`, periodMean != null ? `${periodMean} mg/dL` : 'No data yet', 'var(--c)'],
+          [`READINGS · ${periodLabel.toUpperCase()}`, readings.length || 'No data yet', 'var(--c)'],
           ['ACTIVITY', activity.sessions ? `${activity.total_minutes} min` : 'No logs yet', 'var(--a)'],
           ['AVERAGE SLEEP', sleep.avg_hours != null ? `${sleep.avg_hours}h` : 'No logs yet', 'var(--p)'],
         ];
@@ -4420,6 +4472,8 @@
 
         const canvas = document.getElementById('c-week-g');
         const chartWrap = canvas?.parentElement;
+        const loggedCaption = document.getElementById('insights-logged-caption');
+        if (loggedCaption) loggedCaption.textContent = `Logged readings from the last ${periodDays} days`;
         if (readings.length >= 2 && canvas) {
           canvas.style.display = '';
           if (chartWrap) chartWrap.style.display = '';
@@ -4428,16 +4482,18 @@
           if (typeof Chart !== 'undefined') {
             const ctx = canvas.getContext('2d');
             mkLine('c-week-g', labels, [{
-              label: 'Logged glucose', data: readings.map(item => Number(item.glucose)), borderColor: CY,
+              label: `Logged glucose · ${periodDays} days`, data: readings.map(item => Number(item.glucose)), borderColor: CY,
               backgroundColor: ctx ? grad(ctx, 0, 212, 255) : CYB,
               borderWidth: 2, fill: true, tension: .35, pointRadius: 3
             }], 40, 300);
           } else drawSimpleLineChart('c-week-g', readings.map(item => Number(item.glucose)), labels, CY, 40, 300);
         } else {
+          if (CHTS['c-week-g']) { CHTS['c-week-g'].destroy(); delete CHTS['c-week-g']; }
           if (canvas) canvas.style.display = 'none';
           if (chartWrap) chartWrap.style.display = 'none';
-          if (chartState) { chartState.hidden = false; chartState.textContent = readings.length >= 2 ? 'Chart unavailable in this browser.' : 'Not enough data yet for a glucose trend.'; }
+          if (chartState) { chartState.hidden = false; chartState.textContent = 'Not enough logged readings in this period to show a trend.'; }
         }
+        renderInsightsPrediction(forecast);
 
         const observations = [];
         if (readings.length >= 4) {
@@ -4452,8 +4508,10 @@
         } else {
           observations.push('<div class="insight-item"><strong>Not enough data yet.</strong><small>Log at least four glucose readings over time to identify a reliable direction.</small></div>');
         }
-        if (readings.length && (glucose.hypo_events || glucose.hyper_events)) {
-          observations.push(`<div class="insight-item"><strong>Range events in this period</strong><small>${glucose.hypo_events || 0} reading(s) below 70 mg/dL and ${glucose.hyper_events || 0} above 180 mg/dL.</small></div>`);
+        const lowReadings = readings.filter(item => Number(item.glucose) < 70).length;
+        const highReadings = readings.filter(item => Number(item.glucose) > 180).length;
+        if (lowReadings || highReadings) {
+          observations.push(`<div class="insight-item"><strong>Range events · ${periodLabel}</strong><small>${lowReadings} reading(s) below 70 mg/dL and ${highReadings} above 180 mg/dL.</small></div>`);
         }
         if (activity.sessions) observations.push(`<div class="insight-item"><strong>Activity logged</strong><small>${activity.total_minutes} minutes across ${activity.sessions} session(s) this week.</small></div>`);
         if (sleep.avg_hours != null) observations.push(`<div class="insight-item"><strong>Sleep pattern</strong><small>Your logged average is ${sleep.avg_hours} hours across ${sleep.nights_logged} night(s).</small></div>`);
@@ -4470,6 +4528,48 @@
         if (cards) cards.innerHTML = '<div class="history-error" style="grid-column:1/-1">Could not load insights. Please try again.</div>';
         if (insightList) insightList.innerHTML = '<div class="history-error">Insights are temporarily unavailable.</div>';
         if (detail) detail.innerHTML = '';
+      }
+    }
+
+    function renderInsightsPrediction(forecast) {
+      const canvas = document.getElementById('c-insights-prediction');
+      const state = document.getElementById('insights-prediction-state');
+      const chartWrap = canvas?.parentElement;
+      const values = forecast?.baseline;
+      if (!canvas || !Array.isArray(values) || !values.length) {
+        if (CHTS['c-insights-prediction']) { CHTS['c-insights-prediction'].destroy(); delete CHTS['c-insights-prediction']; }
+        if (canvas) canvas.style.display = 'none';
+        if (chartWrap) chartWrap.style.display = 'none';
+        if (state) {
+          state.hidden = false;
+          state.textContent = 'Model prediction is unavailable. Initialize your Digital Twin and try again.';
+        }
+        return;
+      }
+
+      const points = [];
+      for (let hour = 0; hour <= 72; hour += 12) {
+        const index = Math.min(values.length - 1, hour * 12);
+        points.push({ label: hour === 0 ? '+5 min' : `+${hour}h`, value: Number(values[index]) });
+      }
+      const validPoints = points.filter(point => Number.isFinite(point.value));
+      if (!validPoints.length) {
+        if (canvas) canvas.style.display = 'none';
+        if (chartWrap) chartWrap.style.display = 'none';
+        if (state) { state.hidden = false; state.textContent = 'The model did not return usable prediction values.'; }
+        return;
+      }
+      if (state) state.hidden = true;
+      canvas.style.display = '';
+      if (chartWrap) chartWrap.style.display = '';
+      if (typeof Chart !== 'undefined') {
+        mkLine('c-insights-prediction', validPoints.map(point => point.label), [{
+          label: 'Digital Twin prediction', data: validPoints.map(point => point.value),
+          borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.08)',
+          borderWidth: 2, fill: true, tension: .25, pointRadius: 3
+        }], 40, 300);
+      } else {
+        drawSimpleLineChart('c-insights-prediction', validPoints.map(point => point.value), validPoints.map(point => point.label), '#a78bfa', 40, 300);
       }
     }
 
